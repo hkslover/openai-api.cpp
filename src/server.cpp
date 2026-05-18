@@ -502,6 +502,7 @@ void Server::handleChatCompletions(const httplib::Request& req, httplib::Respons
                     if (!c.function_name.empty()) {
                         tc["function"]["name"] = c.function_name;
                     }
+                    tc["function"]["arguments"] = "";
                 }
                 tc["function"]["arguments"] += c.function_arguments;
             }
