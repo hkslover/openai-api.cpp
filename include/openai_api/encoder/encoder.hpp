@@ -8,6 +8,7 @@
 #include <sstream>
 #include <iomanip>
 #include <random>
+#include <set>
 
 namespace openai_api {
 
@@ -87,6 +88,14 @@ public:
             case OutputChunkType::FinalText:
                 data = create_sse_finish(chunk);
                 break;
+            case OutputChunkType::ToolCallDelta:
+                has_tool_calls_ = true;
+                data = create_sse_tool_call_delta(chunk);
+                break;
+            case OutputChunkType::ToolCallFinal:
+                has_tool_calls_ = true;
+                data = create_sse_finish(chunk);
+                break;
             case OutputChunkType::Error:
                 data = create_sse_error(chunk);
                 break;
@@ -104,6 +113,9 @@ public:
     }
 
 private:
+    bool has_tool_calls_ = false;
+    std::set<int> initialized_tool_call_indices_;
+
     nlohmann::json create_sse_delta(const OutputChunk& chunk) {
         nlohmann::json j;
         j["id"] = chunk.id.empty() ? generate_id() : chunk.id;
@@ -131,7 +143,11 @@ private:
         nlohmann::json choice;
         choice["index"] = chunk.index;
         choice["delta"] = nlohmann::json::object();
-        choice["finish_reason"] = "stop";
+        choice["finish_reason"] = has_tool_calls_ ? "tool_calls" : "stop";
+
+        // Reset streaming state for the next request (SSEEncoder is one-shot per request)
+        has_tool_calls_ = false;
+        initialized_tool_call_indices_.clear();
 
         j["choices"] = nlohmann::json::array({choice});
 
@@ -139,6 +155,47 @@ private:
         j["usage"]["completion_tokens"] = chunk.usage.completion_tokens;
         j["usage"]["total_tokens"] = chunk.usage.total_tokens;
 
+        return j;
+    }
+
+    nlohmann::json create_sse_tool_call_delta(const OutputChunk& chunk) {
+        nlohmann::json j;
+        j["id"] = chunk.id.empty() ? generate_id() : chunk.id;
+        j["object"] = "chat.completion.chunk";
+        j["created"] = chunk.created ? chunk.created : std::time(nullptr);
+        j["model"] = chunk.model.empty() ? "gpt-4" : chunk.model;
+
+        nlohmann::json choice;
+        choice["index"] = chunk.index;
+        choice["finish_reason"] = nullptr;
+
+        nlohmann::json delta;
+        nlohmann::json tc;
+        tc["index"] = chunk.tool_call_index;
+
+        bool is_first = (initialized_tool_call_indices_.find(chunk.tool_call_index)
+                         == initialized_tool_call_indices_.end());
+
+        if (is_first) {
+            // First delta for this index: include role, content, id, type, function.name
+            delta["role"] = "assistant";
+            delta["content"] = nullptr;
+            if (!chunk.tool_call_id.empty()) {
+                tc["id"] = chunk.tool_call_id;
+            }
+            tc["type"] = "function";
+            tc["function"]["name"] = chunk.function_name;
+            tc["function"]["arguments"] = chunk.function_arguments;
+            initialized_tool_call_indices_.insert(chunk.tool_call_index);
+        } else {
+            // Subsequent delta: only function.arguments
+            tc["function"]["arguments"] = chunk.function_arguments;
+        }
+
+        delta["tool_calls"] = nlohmann::json::array({tc});
+        choice["delta"] = delta;
+
+        j["choices"] = nlohmann::json::array({choice});
         return j;
     }
     
@@ -166,8 +223,25 @@ public:
         nlohmann::json choice;
         choice["index"] = chunk.index;
         choice["message"]["role"] = "assistant";
-        choice["message"]["content"] = chunk.text;
-        choice["finish_reason"] = "stop";
+        
+        bool has_tool_calls = chunk.obj.contains("tool_calls")
+                           && !chunk.obj["tool_calls"].is_null()
+                           && !chunk.obj["tool_calls"].empty();
+        
+        if (has_tool_calls) {
+            // Tool call response: content is null, tool_calls array is present
+            if (chunk.text.empty()) {
+                choice["message"]["content"] = nullptr;
+            } else {
+                choice["message"]["content"] = chunk.text;
+            }
+            choice["message"]["tool_calls"] = chunk.obj["tool_calls"];
+            choice["finish_reason"] = "tool_calls";
+        } else {
+            // Normal text response
+            choice["message"]["content"] = chunk.text;
+            choice["finish_reason"] = "stop";
+        }
         
         j["choices"] = nlohmann::json::array({choice});
         

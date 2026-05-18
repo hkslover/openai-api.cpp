@@ -19,6 +19,8 @@ enum class OutputChunkType {
     JsonObject,     // 通用 JSON 对象
     AudioBytes,     // TTS 音频字节
     ImageBytes,     // 生图图片字节
+    ToolCallDelta,  // 流式工具调用 delta
+    ToolCallFinal,  // 非流式完整工具调用
     Error,          // 错误信息
     End             // 流结束标记
 };
@@ -46,6 +48,13 @@ struct OutputChunk {
     // 二进制数据相关字段（音频/图片）
     std::vector<uint8_t> bytes;
     std::string mime_type;  // 如 "audio/mp3", "image/png"
+    
+    // 工具调用相关字段
+    int tool_call_index = 0;             // index within tool_calls array (for streaming)
+    std::string tool_call_id;            // "call_xxx" unique ID
+    std::string function_name;           // function name being called
+    std::string function_arguments;      // JSON arguments (streamed incrementally)
+    bool is_tool_call_final = false;     // marks last delta of a tool call slot
     
     // 错误信息
     std::string error_message;
@@ -131,6 +140,36 @@ struct OutputChunk {
         chunk.type = OutputChunkType::ImageBytes;
         chunk.bytes = data;
         chunk.mime_type = mime;
+        chunk.model = model_id;
+        chunk.created = std::time(nullptr);
+        return chunk;
+    }
+    
+    // 静态工厂方法：创建流式工具调用 delta
+    static OutputChunk ToolCallDelta(const std::string& id, const std::string& name,
+                                      const std::string& args, int index,
+                                      const std::string& model_id = "") {
+        OutputChunk chunk;
+        chunk.type = OutputChunkType::ToolCallDelta;
+        chunk.tool_call_id = id;
+        chunk.function_name = name;
+        chunk.function_arguments = args;
+        chunk.tool_call_index = index;
+        chunk.model = model_id;
+        chunk.created = std::time(nullptr);
+        return chunk;
+    }
+    
+    // 静态工厂方法：创建非流式最终工具调用
+    static OutputChunk ToolCallFinal(const std::string& id, const std::string& name,
+                                      const std::string& args, int index,
+                                      const std::string& model_id = "") {
+        OutputChunk chunk;
+        chunk.type = OutputChunkType::ToolCallFinal;
+        chunk.tool_call_id = id;
+        chunk.function_name = name;
+        chunk.function_arguments = args;
+        chunk.tool_call_index = index;
         chunk.model = model_id;
         chunk.created = std::time(nullptr);
         return chunk;

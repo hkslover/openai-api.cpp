@@ -6,6 +6,7 @@
 #include <chrono>
 #include <regex>
 #include <functional>
+#include <map>
 
 namespace openai_api {
 
@@ -436,22 +437,91 @@ void Server::handleChatCompletions(const httplib::Request& req, httplib::Respons
         
         return;
     } else {
-        // 非流式响应
-        auto chunk = provider->wait_pop_for(options_.default_timeout);
-        if (!chunk.has_value()) {
-            res.status = 504;
-            res.set_content(ErrorEncoder::server_error("Request timeout"), "application/json");
+        // 非流式响应 — 积累所有 chunk 后合并为最终响应
+        std::vector<OutputChunk> chunks;
+        while (true) {
+            auto chunk = provider->wait_pop_for(options_.default_timeout);
+            if (!chunk.has_value()) {
+                res.status = 504;
+                res.set_content(ErrorEncoder::server_error("Request timeout"), "application/json");
+                return;
+            }
+            if (chunk->is_error()) {
+                res.status = 400;
+                ChatCompletionsJSONEncoder encoder;
+                res.set_content(encoder.encode(chunk.value()), "application/json");
+                return;
+            }
+            if (chunk->is_end()) {
+                break;
+            }
+            chunks.push_back(std::move(chunk.value()));
+        }
+
+        if (chunks.empty()) {
+            res.status = 500;
+            res.set_content(ErrorEncoder::server_error("No output generated"), "application/json");
             return;
         }
-        if (chunk->is_error()) {
-            res.status = 400;
-            ChatCompletionsJSONEncoder encoder;
-            res.set_content(encoder.encode(chunk.value()), "application/json");
-            return;
+
+        // 合并所有 chunk 为单个响应
+        OutputChunk merged;
+        merged.type = OutputChunkType::FinalText;
+        merged.created = std::time(nullptr);
+
+        std::string text;
+        // key: tool_call_index → accumulated tool call JSON object
+        std::map<int, nlohmann::json> tool_call_map;
+
+        for (const auto& c : chunks) {
+            // 积累元数据（后出现的覆盖）
+            if (!c.model.empty())    merged.model = c.model;
+            if (!c.id.empty())       merged.id = c.id;
+            if (c.created > 0)       merged.created = c.created;
+            merged.usage.prompt_tokens     += c.usage.prompt_tokens;
+            merged.usage.completion_tokens += c.usage.completion_tokens;
+            merged.usage.total_tokens      += c.usage.total_tokens;
+
+            // 积累文本
+            if (c.type == OutputChunkType::TextDelta ||
+                c.type == OutputChunkType::FinalText) {
+                text += c.text;
+            }
+
+            // 积累工具调用（按 index 分组）
+            if (c.type == OutputChunkType::ToolCallDelta ||
+                c.type == OutputChunkType::ToolCallFinal) {
+                int idx = c.tool_call_index;
+                auto& tc = tool_call_map[idx];
+                if (!tc.contains("id")) {
+                    // First chunk for this index: set all metadata fields
+                    if (!c.tool_call_id.empty()) {
+                        tc["id"] = c.tool_call_id;
+                    }
+                    tc["type"] = "function";
+                    if (!c.function_name.empty()) {
+                        tc["function"]["name"] = c.function_name;
+                    }
+                }
+                tc["function"]["arguments"] += c.function_arguments;
+            }
         }
-        
+
+        merged.text = text;
+
+        if (!tool_call_map.empty()) {
+            nlohmann::json tool_calls_arr = nlohmann::json::array();
+            // std::map iterates in key order (ascending index)
+            for (auto& [idx, tc] : tool_call_map) {
+                // OpenAI non-streaming format does not include "index"
+                tc.erase("index");
+                tool_calls_arr.push_back(std::move(tc));
+            }
+            merged.obj["tool_calls"] = std::move(tool_calls_arr);
+        }
+
         ChatCompletionsJSONEncoder encoder;
-        res.set_content(encoder.encode(chunk.value()), "application/json");
+        res.set_content(encoder.encode(merged), "application/json");
     }
 }
 

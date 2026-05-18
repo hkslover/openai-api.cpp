@@ -26,6 +26,9 @@ struct ParsedChatMessage {
     std::string role;
     std::vector<ChatContentPart> content_parts;
     nlohmann::json raw;
+    std::string tool_call_id;                          // for role == "tool" messages
+    std::string name;                                  // for role == "tool" or legacy role == "function"
+    std::vector<nlohmann::json> tool_calls;            // for role == "assistant" messages with tool_calls
 
     bool has_images() const {
         for (const auto& part : content_parts) {
@@ -54,6 +57,9 @@ struct ChatRequest {
     std::vector<std::string> stop;
     float presence_penalty = 0.0f;
     float frequency_penalty = 0.0f;
+    std::vector<nlohmann::json> tools;     // parsed tools array
+    nlohmann::json tool_choice;            // "auto"/"none"/"required"/{type:"function", function:{name:"..."}}
+    bool parallel_tool_calls = true;       // enable parallel tool calling
     
     // 原始 JSON（供扩展用）
     nlohmann::json raw;
@@ -121,6 +127,14 @@ struct ChatRequest {
                 ParsedChatMessage parsed;
                 parsed.raw = message;
                 parsed.role = message.value("role", "");
+                parsed.tool_call_id = message.value("tool_call_id", "");
+                parsed.name = message.value("name", "");
+
+                if (message.contains("tool_calls") && message["tool_calls"].is_array()) {
+                    for (const auto& tc : message["tool_calls"]) {
+                        parsed.tool_calls.push_back(tc);
+                    }
+                }
 
                 if (!message.contains("content")) {
                     req.parsed_messages.push_back(std::move(parsed));
@@ -170,6 +184,19 @@ struct ChatRequest {
                     req.stop.push_back(s.get<std::string>());
                 }
             }
+        }
+        
+        // Parse tool calling fields
+        if (j.contains("tools") && j["tools"].is_array()) {
+            for (const auto& tool : j["tools"]) {
+                req.tools.push_back(tool);
+            }
+        }
+        if (j.contains("tool_choice")) {
+            req.tool_choice = j["tool_choice"];
+        }
+        if (j.contains("parallel_tool_calls")) {
+            req.parallel_tool_calls = j["parallel_tool_calls"].get<bool>();
         }
         
         return req;
