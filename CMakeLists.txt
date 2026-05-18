@@ -94,6 +94,10 @@ if(OPENAI_API_BUILD_TESTS)
     add_executable(openai_api_test_cluster_full tests/test_cluster_full.cpp)
     target_link_libraries(openai_api_test_cluster_full PRIVATE openai_api)
     add_test(NAME openai_api_cluster_full_test COMMAND openai_api_test_cluster_full)
+
+    add_executable(openai_api_test_tool_call tests/test_tool_call.cpp)
+    target_link_libraries(openai_api_test_tool_call PRIVATE openai_api)
+    add_test(NAME openai_api_tool_call_test COMMAND openai_api_test_tool_call)
 endif()
 
 # ============ 示例 ============
