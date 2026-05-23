@@ -543,7 +543,8 @@ void Server::handleChatCompletions(const httplib::Request& req, httplib::Respons
                     }
                     tc["function"]["arguments"] = "";
                 }
-                tc["function"]["arguments"] += c.function_arguments;
+                tc["function"]["arguments"] =
+                    tc["function"]["arguments"].get<std::string>() + c.function_arguments;
             }
         }
 
@@ -561,7 +562,18 @@ void Server::handleChatCompletions(const httplib::Request& req, httplib::Respons
         }
 
         ChatCompletionsJSONEncoder encoder;
-        res.set_content(encoder.encode(merged), "application/json");
+        try {
+            std::cout << "OpenAI chat non-stream merge complete: chunks=" << chunks.size()
+                      << " text_chars=" << merged.text.size()
+                      << " tool_calls=" << (merged.obj.contains("tool_calls") ? merged.obj["tool_calls"].size() : 0)
+                      << std::endl;
+            res.set_content(encoder.encode(merged), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 500;
+            res.set_content(ErrorEncoder::server_error("Failed to encode chat response: " + std::string(e.what())),
+                            "application/json");
+            return;
+        }
     }
 }
 
