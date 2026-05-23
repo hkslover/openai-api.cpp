@@ -10,6 +10,35 @@
 
 namespace openai_api {
 
+static std::string summarize_tool_names_for_log(const std::vector<nlohmann::json>& tools) {
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < tools.size(); ++i) {
+        if (i > 0) oss << ",";
+        const auto& tool = tools[i];
+        std::string name;
+        if (tool.is_object() && tool.contains("function") && tool["function"].is_object()) {
+            name = tool["function"].value("name", "");
+        } else if (tool.is_object()) {
+            name = tool.value("name", "");
+        }
+        oss << (name.empty() ? "<unnamed>" : name);
+    }
+    oss << "]";
+    return oss.str();
+}
+
+static std::string tool_choice_for_log(const nlohmann::json& tool_choice) {
+    if (tool_choice.is_null()) return "<unset>";
+    std::string dumped = tool_choice.dump();
+    constexpr size_t kMaxLen = 256;
+    if (dumped.size() > kMaxLen) {
+        dumped.resize(kMaxLen);
+        dumped += "...";
+    }
+    return dumped;
+}
+
 // ============ 构造函数/析构函数 ============
 
 Server::Server() {
@@ -321,6 +350,13 @@ void Server::handleChatCompletions(const httplib::Request& req, httplib::Respons
     }
     
     auto request = ChatRequest::from_json(req_json);
+    if (!request.tools.empty() || !request.tool_choice.is_null()) {
+        std::cout << "OpenAI chat parsed tool fields: tools=" << request.tools.size()
+                  << " tool_names=" << summarize_tool_names_for_log(request.tools)
+                  << " tool_choice=" << tool_choice_for_log(request.tool_choice)
+                  << " parallel_tool_calls=" << (request.parallel_tool_calls ? 1 : 0)
+                  << std::endl;
+    }
     if (request.model.empty()) {
         res.status = 400;
         res.set_content(ErrorEncoder::invalid_request("Missing 'model' field"), "application/json");
