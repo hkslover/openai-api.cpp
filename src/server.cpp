@@ -478,6 +478,9 @@ void Server::handleChatCompletions(const httplib::Request& req, httplib::Respons
         while (true) {
             auto chunk = provider->wait_pop_for(options_.default_timeout);
             if (!chunk.has_value()) {
+                if (provider->is_ended()) {
+                    break;
+                }
                 res.status = 504;
                 res.set_content(ErrorEncoder::server_error("Request timeout"), "application/json");
                 return;
